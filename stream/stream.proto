@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+option go_package = "./stream";
+
+package stream;
+
+service Lcm {
+        rpc Stream(stream Message) returns (stream Message) {}
+}
+
+message Message {
+        bytes data = 1;
+}
