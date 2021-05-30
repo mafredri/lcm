@@ -9,7 +9,6 @@ import (
 
 	"github.com/mafredri/lcm"
 	"github.com/mafredri/lcm/stream"
-	pb "github.com/mafredri/lcm/stream"
 
 	"google.golang.org/grpc"
 )
@@ -33,7 +32,7 @@ func main() {
 	defer s.Close()
 
 	grpcSrv := grpc.NewServer()
-	pb.RegisterLcmServer(grpcSrv, newServer(s))
+	stream.RegisterLcmServer(grpcSrv, newServer(s))
 	log.Fatal(grpcSrv.Serve(lis))
 }
 
@@ -42,9 +41,9 @@ type lcmServer struct {
 	m *lcm.LCM
 }
 
-func (srv *lcmServer) recvStream(stream pb.Lcm_StreamServer) error {
+func (srv *lcmServer) recvStream(s stream.Lcm_StreamServer) error {
 	for {
-		in, err := stream.Recv()
+		in, err := s.Recv()
 		if err == io.EOF {
 			return nil
 		}
@@ -59,21 +58,21 @@ func (srv *lcmServer) recvStream(stream pb.Lcm_StreamServer) error {
 	}
 }
 
-func (srv *lcmServer) sendStream(stream pb.Lcm_StreamServer) error {
+func (srv *lcmServer) sendStream(s stream.Lcm_StreamServer) error {
 	for {
 		m := srv.m.Read()
-		err := stream.Send(&pb.Message{Data: m})
+		err := s.Send(&stream.Message{Data: m})
 		if err != nil {
 			return err
 		}
 	}
 }
 
-func (srv *lcmServer) Stream(stream pb.Lcm_StreamServer) error {
+func (srv *lcmServer) Stream(s stream.Lcm_StreamServer) error {
 	log.Println("Client connected to stream")
 	errc := make(chan error, 2)
-	go func() { errc <- srv.recvStream(stream) }()
-	go func() { errc <- srv.sendStream(stream) }()
+	go func() { errc <- srv.recvStream(s) }()
+	go func() { errc <- srv.sendStream(s) }()
 	err := <-errc
 	log.Printf("Client disconnected from stream: %v", err)
 	return err

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/mafredri/lcm"
-	pb "github.com/mafredri/lcm/stream"
+	"github.com/mafredri/lcm/stream"
 
 	"google.golang.org/grpc"
 )
@@ -25,22 +25,22 @@ func main() {
 		panic(err)
 	}
 	defer conn.Close()
-	client := pb.NewLcmClient(conn)
+	client := stream.NewLcmClient(conn)
 
 	for {
-		stream, err := client.Stream(context.TODO())
+		s, err := client.Stream(context.TODO())
 		if err != nil {
 			panic(err)
 		}
-		err = watch(stream)
+		err = watch(s)
 		if err != nil {
 			log.Println("watch", err)
 		}
-		stream.CloseSend()
+		s.CloseSend()
 	}
 }
 
-func watch(stream pb.Lcm_StreamClient) error {
+func watch(s stream.Lcm_StreamClient) error {
 	go func() {
 		for {
 			for _, d := range [][]byte{
@@ -64,7 +64,7 @@ func watch(stream pb.Lcm_StreamClient) error {
 				lcm.DisplayOn,
 			} {
 				log.Printf("Sending message: %#x", d)
-				err := stream.Send(&pb.Message{Data: d})
+				err := s.Send(&stream.Message{Data: d})
 				if err != nil {
 					log.Printf("Error sending message: %v", err)
 					return
@@ -75,7 +75,7 @@ func watch(stream pb.Lcm_StreamClient) error {
 	}()
 
 	for {
-		m, err := stream.Recv()
+		m, err := s.Recv()
 		if err != nil {
 			if err == io.EOF {
 				return nil
@@ -88,7 +88,7 @@ func watch(stream pb.Lcm_StreamClient) error {
 		fmt.Printf("Got (str): %q\n", m.Data)
 
 		if m.Data[0] == lcm.CommandByte && m.Data[2] == 0x80 {
-			err = stream.Send(&pb.Message{Data: lcm.ButtonReply})
+			err = s.Send(&stream.Message{Data: lcm.ButtonReply})
 			if err != nil {
 				log.Printf("Error sending button reply: %v", err)
 			}
