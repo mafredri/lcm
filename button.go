@@ -11,6 +11,3 @@ const (
 	Back
 	Enter
 )
-
-// ButtonReply represents the reply sent when receiving a button press.
-var ButtonReply = []byte{ReplyByte, 0x01, 0x80, 0x01}

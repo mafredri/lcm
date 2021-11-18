@@ -24,7 +24,7 @@ func (m *recvMessage) WriteByte(c byte) error {
 	switch {
 	// Message type.
 	case n == 0:
-		if c != CommandByte && c != ReplyByte {
+		if c := Action(c); c != Command && c != Reply {
 			return fmt.Errorf("invalid frame: %#x", c)
 		}
 
@@ -49,7 +49,7 @@ func (m *recvMessage) WriteByte(c byte) error {
 }
 
 func (m *recvMessage) Bytes() []byte {
-	l := m.buf.Len()
+	l := m.buf.Len() - 1 // Ignore checksum.
 	b := make([]byte, l)
 	copy(b, m.buf.Bytes())
 	return b

@@ -44,7 +44,7 @@ func watch(s stream.Lcm_StreamClient) error {
 	go func() {
 		for {
 			for _, d := range [][]byte{
-				lcm.DisplayStatus,
+				lcm.DisplayOn,
 				// Write msg
 				setDisplay(lcm.DisplayTop, 0, "HELLO"),
 				setDisplay(lcm.DisplayBottom, 0, "WORLD"),
@@ -58,10 +58,10 @@ func watch(s stream.Lcm_StreamClient) error {
 				setDisplay(lcm.DisplayTop, 11, "HELLO"),
 				// Lower case.
 				setDisplay(lcm.DisplayTop, 0, "Hello"),
-				lcm.DisplayStatus,
+				lcm.DisplayOn,
 				lcm.ClearDisplay,
 				lcm.DisplayOff,
-				lcm.DisplayOn,
+				lcm.DisplayStatus,
 			} {
 				log.Printf("Sending message: %#x", d)
 				err := s.Send(&stream.Message{Data: d})
@@ -87,8 +87,10 @@ func watch(s stream.Lcm_StreamClient) error {
 		fmt.Printf("Got (bin): %08b\n", m.Data)
 		fmt.Printf("Got (str): %q\n", m.Data)
 
-		if m.Data[0] == lcm.CommandByte && m.Data[2] == 0x80 {
-			err = s.Send(&stream.Message{Data: lcm.ButtonReply})
+		data := lcm.Message(m.Data)
+
+		if data.Type() == lcm.Command && data.Function() == lcm.ButtonPress {
+			err = s.Send(&stream.Message{Data: data.ReplyOk()})
 			if err != nil {
 				log.Printf("Error sending button reply: %v", err)
 			}

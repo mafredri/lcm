@@ -51,7 +51,7 @@ func (srv *lcmServer) recvStream(s stream.Lcm_StreamServer) error {
 			return err
 		}
 
-		err = srv.m.Write(in.GetData())
+		err = srv.m.Send(in.GetData())
 		if err != nil {
 			return err
 		}
@@ -60,7 +60,7 @@ func (srv *lcmServer) recvStream(s stream.Lcm_StreamServer) error {
 
 func (srv *lcmServer) sendStream(s stream.Lcm_StreamServer) error {
 	for {
-		m := srv.m.Read()
+		m := srv.m.Recv()
 		err := s.Send(&stream.Message{Data: m})
 		if err != nil {
 			return err

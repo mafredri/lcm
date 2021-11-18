@@ -7,7 +7,7 @@ files.
 The socat unix command must be installed on the target system.
 
 Usage:
-	lcm-monitor -in input.txt -out output.txt
+	lcm-monitor -out output.txt
 
 */
 package main
@@ -15,16 +15,15 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"time"
+	"path/filepath"
 
-	"github.com/tarm/serial"
+	"github.com/pkg/term"
 )
 
 const (
@@ -33,32 +32,33 @@ const (
 )
 
 func main() {
+	baud := flag.Int("baud", 115200, "baud rate")
 	out := flag.String("out", "", "output file")
-	in := flag.String("in", "", "input file")
+	socat := flag.String("socat", "/usr/bin/socat", "socat binary")
 	flag.Parse()
 
-	if err := run(*in, *out); err != nil {
+	if err := run(*baud, *out, *socat); err != nil {
 		panic(err)
 	}
 }
 
-func run(infile, outfile string) error {
-	if infile == "" || outfile == "" {
-		return errors.New("in and out must be set")
+func run(baud int, outfile, socatBin string) error {
+	if outfile == "" {
+		return errors.New("out must be set")
 	}
 
 	if _, err := os.Stat(ttyS1); os.IsExist(err) {
 		os.Rename(ttyS1, ttyV1)
 	}
 
-	c := &serial.Config{Name: ttyV1, Baud: 115200}
-	s, err := serial.OpenPort(c)
+	s, err := term.Open(ttyV1, term.Speed(baud), term.RawMode)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
 
-	socat := exec.Command("/root/socat", "-", fmt.Sprintf("PTY,link=%s,raw,echo=0,waitslave", ttyS1))
+	socat := exec.Command(socatBin, "-", fmt.Sprintf("PTY,link=%s,raw,echo=0", ttyS1))
+	socat.Env = append(socat.Env, fmt.Sprintf("LD_LIBRARY_PATH=%s", filepath.Dir(socatBin)))
 	stdout, err := socat.StdoutPipe()
 	if err != nil {
 		return err
@@ -75,23 +75,24 @@ func run(infile, outfile string) error {
 		return err
 	}
 
-	errc := make(chan error, 1)
-	go func() { errc <- tee(s, stdin, " IN", infile) }()
-	go func() { errc <- tee(stdout, s, "OUT", outfile) }()
-	go func() { errc <- socat.Wait() }()
-
-	return <-errc
-}
-
-func tee(r io.Reader, w io.Writer, id, file string) error {
-	out, err := os.Create(file)
+	out, err := os.Create(outfile)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 
+	errc := make(chan error, 1)
+	go func() { errc <- tee(s, stdin, " IN", out) }()
+	go func() { errc <- tee(stdout, s, "OUT", out) }()
+	go func() { errc <- socat.Wait() }()
+
+	return <-errc
+}
+
+func tee(r io.Reader, w io.Writer, id string, out io.Writer) error {
 	var buf bytes.Buffer
 	rr := bufio.NewReader(io.TeeReader(r, w))
+	// t := time.Now()
 	for {
 		b, err := rr.ReadByte()
 		if err != nil {
@@ -100,21 +101,23 @@ func tee(r io.Reader, w io.Writer, id, file string) error {
 			}
 			return err
 		}
-		if b == 0xF0 || b == 0xF1 {
-			if buf.Len() > 0 {
-				s := hex.EncodeToString(buf.Bytes())
-				fmt.Fprintf(out, "%s (%s)\n", s, buf.String())
-				buf.Reset()
-			}
-			t := time.Now().Format("15:04:05.999999999")
-			for len(t) < 18 {
-				t += "0"
-			}
-			_, err = fmt.Fprintf(out, "%s[%s]: ", t, id)
-			if err != nil {
-				return err
-			}
-		}
+		// if b == 0x4D || b == 0x53 {
+		// 	if buf.Len() > 0 {
+		// 		s := hex.EncodeToString(buf.Bytes())
+		// 		ts := t.Format("15:04:05.999999999")
+		// 		for len(ts) < 18 {
+		// 			ts += "0"
+		// 		}
+		// 		_, err = fmt.Fprintf(out, "%s[%s]: %s (%s)\n", ts, id, s, buf.String())
+		// 		if err != nil {
+		// 			return err
+		// 		}
+		// 		buf.Reset()
+		// 	}
+		// 	t = time.Now()
+		// }
 		buf.WriteByte(b)
+		buf.WriteTo(out)
+		buf.Reset()
 	}
 }
