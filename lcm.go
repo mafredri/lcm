@@ -5,12 +5,13 @@ button presses.
 
 LCM data format:
 
-	MESSAGE_TYPE DATA_LENGTH COMMAND [[DATA]...] [CRC]
+	MESSAGE_TYPE DATA_LENGTH FUNCTION [[DATA]...] [CRC]
 */
 package lcm
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -22,30 +23,27 @@ import (
 //go:generate protoc --proto_path=. --go_out=. --go-grpc_out=. ./stream/stream.proto
 
 const (
-	// ReplyTimeout defines how long we wait for a reply, usually
-	// one is received within 10ms. The ASUSTOR daemon seems to
-	// resend messages after 100ms if no response is received.
-	ReplyTimeout = 100 * time.Millisecond
-	// RetryInterval specifies how long to wait between retries or
-	// last (incorrect) response. The ASUSTOR daemon seems to wait
-	// 100ms after the last received communication. If the initial
-	// response delay is 50ms, then there will be a total of 150ms
-	// until the next resend.
-	RetryInterval = 100 * time.Millisecond
-	// MessageDelay defines how long to wait before issuing the next
-	// message, should be considered both when receiving and writing.
+	// DefaultReplyTimeout defines how long we wait for a reply,
+	// usually one is received within 10ms. The ASUSTOR daemon
+	// resends messages after 100ms if no response is received.
+	DefaultReplyTimeout = 20 * time.Millisecond
+	// DefaultRetryLimit defines how many times a command will be
+	// retried until giving up. Given the default reply timeout,
+	// this could lead to nothing happening on the screen for about
+	// one second.
+	//
+	// ASUSTOR tries up to 100 times, however, this rarely helps
+	// clear up the communication error.
+	DefaultRetryLimit = 25
+	// DefaultWriteDelay defines how long to wait before writing the
+	// next message. This is used both when writing commands and
+	// responding to commands from the display.
 	//
 	// The ASUSTOR lcmd binary uses 15ms and 45ms sleeps between
-	// certain commands.
-	MessageDelay = 15 * time.Millisecond
-	// ReplyDelay defines how long to wait before sending a reply to
-	// a command (e.g. responding to button presses). Basis for this
-	// value is that it reduces the number of corrupt messages
-	// following it.
-	ReplyDelay = 2000 * time.Microsecond
-	// DefaultRetryLimit defines how many times a command will be
-	// retried until giving up.
-	DefaultRetryLimit = 100
+	// certain commands, but this seems excessive. Instead we use
+	// increasing backoff where applicable because spamming at the
+	// same interval can lead to the display not responding at all.
+	DefaultWriteDelay = 5000 * time.Microsecond
 )
 
 // DefaultTTY represents the default serial tty for LCM.
@@ -53,6 +51,9 @@ const DefaultTTY = "/dev/ttyS1"
 
 // LCM represents the ASUSTOR Liquid Crystal Monitor.
 type LCM struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	done     chan struct{}
 	s        *term.Term
 	writeC   chan sendMessage
 	rawReadC chan Message
@@ -72,11 +73,15 @@ func Open(tty string) (*LCM, error) {
 		return nil, err
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	m := &LCM{
+		ctx:      ctx,
+		cancel:   cancel,
+		done:     make(chan struct{}),
 		s:        s,
-		writeC:   make(chan sendMessage, 1),
-		rawReadC: make(chan Message, 1),
-		readC:    make(chan []byte, 4),
+		writeC:   make(chan sendMessage, 2),
+		rawReadC: make(chan Message, 2),
+		readC:    make(chan []byte, 5),
 	}
 
 	go m.read()
@@ -86,22 +91,31 @@ func Open(tty string) (*LCM, error) {
 }
 
 type sendMessage struct {
-	err        chan error
-	data       Message
-	retryLimit int
+	err          chan error
+	data         Message
+	retryLimit   int
+	replyTimeout time.Duration
+	writeDelay   time.Duration
 }
 
 // Send messages to the display. Note that checksum should be omitted,
 // it is handled transparently as part of the protocol implementation.
+//
+// TODO(mafredri): Add support for functional arguments:
+//
+// 	m.Send(msg, lcm.WithRetryLimit(100), lcm.WithReplyTimeout(5 * time.Millisecond))
+//
 func (m *LCM) Send(msg Message) error {
 	data := make([]byte, len(msg), len(msg)+1)
 	copy(data, msg)
 	data = append(data, checksum(data))
 
 	sm := sendMessage{
-		err:        make(chan error, 1),
-		data:       data,
-		retryLimit: DefaultRetryLimit,
+		err:          make(chan error, 1),
+		data:         data,
+		retryLimit:   DefaultRetryLimit,
+		replyTimeout: DefaultReplyTimeout,
+		writeDelay:   DefaultWriteDelay,
 	}
 	m.writeC <- sm
 	return <-sm.err
@@ -125,16 +139,9 @@ func (m *LCM) read() {
 		if err != nil {
 			if errors.As(err, &parseErr) {
 				log.Printf("LCM.read: %v", err)
-
-				// The trailing message could be valid, try to recover.
-				b := raw.Bytes()
-				last := b[len(b)-1]
-				if last == byte(Command) || last == byte(Reply) {
-					err = r.UnreadByte()
-					log.Printf("LCM.read: Trying to recover possible message (%#x), err: %v", last, err)
-				}
 				continue
 			}
+			// TODO(mafredri): Close LCM.
 			log.Printf("LCM.read: fatal: %v", err)
 			return
 		}
@@ -147,7 +154,7 @@ func (m *LCM) read() {
 // write synchronously to the serial port.
 func (m *LCM) write(data []byte) error {
 	n, err := m.s.Write(data)
-	log.Printf("write: Wrote msg: %#x %d, err: %v", data, n, err)
+	log.Printf("LCM.write: Wrote msg: %#x %d, err: %v", data, n, err)
 	if err != nil {
 		return err
 	}
@@ -155,23 +162,21 @@ func (m *LCM) write(data []byte) error {
 }
 
 // handle incoming and outgoing messages.
-//
-// TODO(mafredri): Refactor, maybe implement reply and retry mechanism.
 func (m *LCM) handle() {
+	defer close(m.done)
+
 	var id int64
 	var retry func()
+	var handleReply func(Message) bool
 	var replyTimeout <-chan time.Time
-	noopHandleReply := func(Message) bool { return false }
-	handleReply := noopHandleReply
 
 	for {
 		var read Message
 
 		// Prioritize processing all messages from the LCM before
-		// sending commands or retrying timed out ones.
-		if len(m.rawReadC) > 0 {
-			read = <-m.rawReadC
-		} else {
+		// sending commands. The replyTimeout also serves as a
+		// guard against concurrent writes.
+		if len(m.rawReadC) > 0 || replyTimeout != nil {
 			select {
 			case read = <-m.rawReadC:
 
@@ -179,6 +184,15 @@ func (m *LCM) handle() {
 				log.Printf("LCM.handle: write(%d): timeout, retry...", id)
 				retry()
 
+			case <-m.ctx.Done():
+				return
+			}
+		} else {
+			select {
+			case read = <-m.rawReadC:
+
+			// Handle writes, each write must complete (or fail)
+			// before the next one is handled.
 			case w := <-m.writeC:
 				id++
 				log.Printf("LCM.handle: write(%d): %#x", id, w.data)
@@ -186,20 +200,15 @@ func (m *LCM) handle() {
 				// Define reply function for verifying
 				// that the command was successful.
 				handleReply = func(reply Message) bool {
-					if reply.Action() == Reply && reply.Function() == w.data.Function() {
-						time.Sleep(ReplyDelay)
-
-						if reply[3] == 0 {
+					if reply.Type() == Reply && reply.Function() == w.data.Function() {
+						if reply.Ok() {
 							log.Printf("LCM.handle: write(%d): reply OK", id)
 							close(w.err)
-							handleReply = noopHandleReply
+							handleReply = nil
 							retry = nil
 							replyTimeout = nil
 						} else {
-							log.Printf("LCM.handle: write(%d): reply FAIL (%#x), retrying...", id, reply[3])
-							// Give the MCU a chance to catch up instead
-							// of bombarding it with retries.
-							time.Sleep(2 * MessageDelay)
+							log.Printf("LCM.handle: write(%d): reply ERROR (%#x), retrying...", id, reply.Value())
 							retry()
 						}
 
@@ -213,13 +222,24 @@ func (m *LCM) handle() {
 				var wErr error
 				retry = func() {
 					if tries > w.retryLimit {
-						w.err <- fmt.Errorf("retry limit exceeded: %d/%d: last write error: %v", tries-1, w.retryLimit, wErr)
-						handleReply = noopHandleReply
+						// We gave it a try, not much more we can do...
+						// Caller could try power-cycling the display.
+						if wErr != nil {
+							w.err <- fmt.Errorf("retry limit exceeded: %d/%d: last write error: %w", tries-1, w.retryLimit, wErr)
+						} else {
+							w.err <- fmt.Errorf("retry limit exceeded: %d/%d", tries-1, w.retryLimit)
+						}
+						handleReply = nil
 						retry = nil
 						replyTimeout = nil
 
 						return
 					}
+
+					// Add a small delay before each write to
+					// ensure the serial port is not spammed.
+					time.Sleep(w.writeDelay)
+
 					tries++
 					err := m.write(w.data)
 					if err != nil {
@@ -227,39 +247,44 @@ func (m *LCM) handle() {
 						wErr = err
 					}
 
-					replyTimeout = time.After(ReplyTimeout)
-					time.Sleep(MessageDelay)
+					replyTimeout = time.After(DefaultReplyTimeout)
 				}
 
 				retry() // Initiate first try.
+
+			case <-m.ctx.Done():
+				return
 			}
 		}
 
-		if len(read) == 0 || handleReply(read) {
+		if len(read) == 0 || (handleReply != nil && handleReply(read)) {
 			continue
 		}
 
-		switch read.Action() {
+		switch read.Type() {
 		case Command:
 			log.Printf("LCM.handle: read(Command): %#x", read.Function())
 
-			// Delay before and after writing to give the LCD MCU
-			// more time for processing, it is very fickle.
-			time.Sleep(ReplyDelay)
-			reply := read.ReplyOk()
-			err := m.write(append(reply, checksum(reply)))
-			log.Printf("LCM.handle: read(Command): Sent reply %#x, err: %v", reply, err)
-			time.Sleep(ReplyDelay)
+			// NOTE(mafredri): In principle, the protocol supports
+			// sending acknowledgements, however, sending
+			// acknowledgements to the display often leads to
+			// corruption and seems to work fine without.
+			if false {
+				time.Sleep(DefaultWriteDelay)
+				reply := read.ReplyOk()
+				err := m.write(append(reply, checksum(reply)))
+				log.Printf("LCM.handle: read(Command): sent reply %#x, err: %v", reply, err)
+			}
 
 		case Reply:
-			log.Printf("LCM.handle: read(Reply): Unhandled reply (%#x): %#x", read.Function(), read)
+			log.Printf("LCM.handle: read(Reply): unhandled reply (%#x): %#x", read.Function(), read)
 
 		default:
 			log.Printf("LCM.handle: read(Unknown): %#x", read)
 		}
 
 		read = read[:len(read)-1] // Discard checksum.
-		log.Printf("LCM.handle: read: Forwarding message: %#x", read)
+		log.Printf("LCM.handle: read: forwarding message: %#x", read)
 
 		select {
 		case m.readC <- read:
@@ -267,7 +292,7 @@ func (m *LCM) handle() {
 		default:
 			select {
 			case <-m.readC:
-				log.Printf("LCM.handle: read: Buffer full, discarded earliest message")
+				log.Printf("LCM.handle: read: buffer full, discarded earliest message")
 			default:
 				// Buffer got depleted.
 			}
@@ -279,6 +304,8 @@ func (m *LCM) handle() {
 
 // Close the serial connection.
 func (m *LCM) Close() error {
+	m.cancel()
+	<-m.done
 	return m.s.Close()
 }
 

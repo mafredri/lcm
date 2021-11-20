@@ -33,12 +33,22 @@ func (m *recvMessage) WriteByte(c byte) error {
 	switch {
 	// Message type.
 	case n == 0:
-		if c := Action(c); c != Command && c != Reply {
+		if c := Type(c); c != Command && c != Reply {
 			return parsingError{m: fmt.Sprintf("invalid frame: %#x", c)}
 		}
 
 	// Payload size.
 	case n == 1:
+		// Safeguard against parsing very long messages due to
+		// corrupted byte sequence.
+		if Type(m.buf.Bytes()[0]) == Reply && c > 1 {
+			return parsingError{m: fmt.Sprintf("reply message too long %d, should be 1", c)}
+		} else if c > 16 {
+			// Although, the longest known message sent by
+			// the screen is of length 3, we could be more
+			// strict here.
+			return parsingError{m: fmt.Sprintf("command message too long %d, should be <= 16", c)}
+		}
 		m.len = 3 + c // Header and payload.
 
 	// End of message (checksum).
@@ -68,4 +78,20 @@ func (m *recvMessage) Reset() {
 	m.buf.Reset()
 	m.sum = 0
 	m.len = 0
+}
+
+func copyBytes(dst io.ByteWriter, src io.ByteReader) error {
+	for {
+		c, err := src.ReadByte()
+		if err != nil {
+			return err
+		}
+		err = dst.WriteByte(c)
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
 }

@@ -68,11 +68,10 @@ func main() {
 		for {
 			select {
 			case <-activityC:
-			case <-time.After(2 * time.Second):
+			case <-time.After(5 * time.Second):
 				send(m, lcm.DisplayOff)
 				send(m, lcm.DisplayStatus)
-				setDisplay(m, lcm.DisplayTop, 1, "openlcmd v0.0.1")
-				setDisplay(m, lcm.DisplayBottom, 0, "")
+				resetText(m)
 				<-activityC
 			}
 		}
@@ -81,10 +80,10 @@ func main() {
 	go func() {
 		for {
 			b := m.Recv()
-			switch b.Action() {
+			switch b.Type() {
 			case lcm.Command:
 				switch b.Function() {
-				case lcm.ButtonPress:
+				case lcm.FButton:
 					btn := lcm.Button(b[3])
 					switch btn {
 					case lcm.Up:
@@ -103,10 +102,13 @@ func main() {
 					// press, so reset inactivity timer.
 					activity()
 
-				case lcm.VersionRequest:
+				case lcm.FVersion:
 					log.Printf("Detected LCM MCU version %d.%d.%d", b[3], b[4], b[5])
 				}
 			case lcm.Reply:
+				// if b.Function() == lcm.FText && !b.Ok() {
+				// 	send(m, lcm.UnknownCommand0x21)
+				// }
 				// Command done.
 			default:
 				return
@@ -115,42 +117,56 @@ func main() {
 	}()
 
 	go func() {
-		send(m, lcm.RequestMCUVersion)
-		time.Sleep(300 * time.Millisecond)
-
 		// initalize(m)
 		// time.Sleep(time.Second)
-		// powerCycle(powerLine)
+		//
+		// send(m, lcm.UnknownCommand0x23)
+		// time.Sleep(time.Second)
+		// os.Exit(1)
 
-		initalize(m)
+		send(m, lcm.DisplayOn)
+		send(m, lcm.DisplayStatus)
+		setDisplay(m, lcm.DisplayBottom, 0, "")
+
+		// for {
+		next := lcm.Scroll(lcm.DisplayTop, "Welcome to openlcmd, the world is your oyster!")
+		for {
+			b, start, done := next()
+			send(m, b)
+			activity()
+			if start && done {
+				break
+			}
+			if start || done {
+				time.Sleep(2 * time.Second)
+			} else {
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+		// }
+
+		resetText(m)
 
 		activity()
 
-		time.Sleep(time.Second)
+		time.Sleep(100 * time.Millisecond)
+		send(m, lcm.RequestVersion)
+		time.Sleep(300 * time.Millisecond)
 	}()
+
+	// TODO(mafredri): In case of unrecoverable errors
+	// powerCycle(powerLine)
 
 	<-ctx.Done()
 }
 
-func powerCycle(line *gpiod.Line) {
-	line.SetValue(0)
-	time.Sleep(250 * time.Millisecond)
-	line.SetValue(1)
-
-	// It takes ~5 seconds for the screen to boot up.
-	time.Sleep(6 * time.Second)
-}
-
-func initalize(m *lcm.LCM) {
-	send(m, lcm.DisplayOn)
-	send(m, lcm.DisplayStatus)
-
+func resetText(m *lcm.LCM) {
 	// Clear display lines.
 	setDisplay(m, lcm.DisplayTop, 0, " openlcmd v0.0.1")
 	setDisplay(m, lcm.DisplayBottom, 0, "")
 }
 
-func send(m *lcm.LCM, b []byte) {
+func send(m *lcm.LCM, b lcm.Message) {
 	err := m.Send(b)
 	if err != nil {
 		log.Println(err)
@@ -163,4 +179,13 @@ func setDisplay(m *lcm.LCM, line lcm.DisplayLine, indent int, text string) {
 		panic(err)
 	}
 	send(m, b)
+}
+
+func powerCycle(line *gpiod.Line) {
+	line.SetValue(0)
+	time.Sleep(250 * time.Millisecond)
+	line.SetValue(1)
+
+	// It takes ~5 seconds for the screen to boot up.
+	time.Sleep(6 * time.Second)
 }
