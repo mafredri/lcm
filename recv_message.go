@@ -13,6 +13,15 @@ type recvMessage struct {
 
 var _ io.ByteWriter = (*recvMessage)(nil)
 
+type parsingError struct {
+	m        string
+	checksum bool
+}
+
+func (e parsingError) Error() string {
+	return e.m
+}
+
 func (m *recvMessage) WriteByte(c byte) error {
 	n := uint8(m.buf.Len())
 
@@ -25,7 +34,7 @@ func (m *recvMessage) WriteByte(c byte) error {
 	// Message type.
 	case n == 0:
 		if c := Action(c); c != Command && c != Reply {
-			return fmt.Errorf("invalid frame: %#x", c)
+			return parsingError{m: fmt.Sprintf("invalid frame: %#x", c)}
 		}
 
 	// Payload size.
@@ -37,11 +46,11 @@ func (m *recvMessage) WriteByte(c byte) error {
 		if m.sum == c {
 			return io.EOF // Success.
 		}
-		return fmt.Errorf("invalid checksum: %#x", m.buf.Bytes())
+		return parsingError{m: fmt.Sprintf("invalid checksum: %#x", m.buf.Bytes()), checksum: true}
 
 	// Impossible state.
 	case n > 1 && n > m.len:
-		return fmt.Errorf("invalid size: %#x", m.buf.Bytes())
+		return parsingError{m: fmt.Sprintf("invalid size: %#x", m.buf.Bytes())}
 	}
 
 	m.sum += c
@@ -49,7 +58,7 @@ func (m *recvMessage) WriteByte(c byte) error {
 }
 
 func (m *recvMessage) Bytes() []byte {
-	l := m.buf.Len() - 1 // Ignore checksum.
+	l := m.buf.Len()
 	b := make([]byte, l)
 	copy(b, m.buf.Bytes())
 	return b

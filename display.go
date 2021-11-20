@@ -7,7 +7,7 @@ import (
 
 type Message []byte
 
-func (m Message) Type() Action {
+func (m Message) Action() Action {
 	if len(m) == 0 {
 		return 0
 	}
@@ -22,7 +22,7 @@ func (m Message) Function() Function {
 }
 
 func (m Message) ReplyOk() Message {
-	if m.Type() == Command {
+	if m.Action() == Command {
 		return []byte{byte(Reply), 0x01, byte(m.Function()), 0x00}
 	}
 	return nil

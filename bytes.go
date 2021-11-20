@@ -17,6 +17,5 @@ func copyBytes(dst io.ByteWriter, src io.ByteReader) error {
 		if err != nil {
 			return err
 		}
-
 	}
 }
