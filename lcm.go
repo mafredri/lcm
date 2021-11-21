@@ -44,6 +44,16 @@ const (
 	// increasing backoff where applicable because spamming at the
 	// same interval can lead to the display not responding at all.
 	DefaultWriteDelay = 5000 * time.Microsecond
+	// ProtocolSendAck specifies if we should send acknowledgement
+	// replies to the screen when it sends us commands (e.g. button
+	// press or firmware version).
+	//
+	// If the screen sent us a command, technically we should send
+	// an acknowledgement reply. However, it often causes the
+	// following command (from us) to become corrupt. The frequency
+	// of the corruption can be lowered with delays, but then again,
+	// it seems like the display does not care if we reply or not.
+	ProtocolSendAck = false
 )
 
 // DefaultTTY represents the default serial tty for LCM.
@@ -126,8 +136,8 @@ func (m *LCM) Recv() Message {
 	return <-m.readC
 }
 
-// read reads asynchronously from the serial port
-// and transmits messages on the read channel.
+// read the serial port and transmit
+// messages on the read channel.
 func (m *LCM) read() {
 	var parseErr parsingError
 	// No need for a large buffer, the most common message length is 5.
@@ -145,16 +155,17 @@ func (m *LCM) read() {
 			log.Printf("LCM.read: fatal: %v", err)
 			return
 		}
-		b := raw.Bytes()
+
+		b := Message(raw.Bytes())
 		log.Printf("LCM.read: OK %#x", b)
 		m.rawReadC <- b
 	}
 }
 
-// write synchronously to the serial port.
+// write to the serial port.
 func (m *LCM) write(data []byte) error {
 	n, err := m.s.Write(data)
-	log.Printf("LCM.write: Wrote msg: %#x %d, err: %v", data, n, err)
+	log.Printf("LCM.write: wrote: %#x %d, err: %v", data, n, err)
 	if err != nil {
 		return err
 	}
@@ -265,15 +276,25 @@ func (m *LCM) handle() {
 		case Command:
 			log.Printf("LCM.handle: read(Command): %#x", read.Function())
 
-			// NOTE(mafredri): In principle, the protocol supports
-			// sending acknowledgements, however, sending
-			// acknowledgements to the display often leads to
-			// corruption and seems to work fine without.
-			if false {
+			reply := read.ReplyOk()
+			reply = append(reply, checksum(reply))
+			if ProtocolSendAck {
+				// A delay is necessary because otherwise the
+				// serial communication protcol is guaranteed
+				// to become corrupt. What usually works quite
+				// well is a delay somewhere between 150us and
+				// 5ms. Any longer than that and it seems the
+				// display forgets it's waiting for one.
+				//
+				// It would be possible to reply with more
+				// precise control of the delay in (*LCM).read,
+				// however, in practice this gives no benefit.
 				time.Sleep(DefaultWriteDelay)
-				reply := read.ReplyOk()
-				err := m.write(append(reply, checksum(reply)))
-				log.Printf("LCM.handle: read(Command): sent reply %#x, err: %v", reply, err)
+
+				err := m.write(reply)
+				log.Printf("LCM.handle: read(Command): sent ack reply %#x, err: %v", reply, err)
+			} else {
+				log.Printf("LCM.handle: read(Command): protocol ack disabled, not sending reply %#v", reply)
 			}
 
 		case Reply:
