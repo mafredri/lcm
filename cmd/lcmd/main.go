@@ -14,6 +14,11 @@ import (
 	"github.com/mafredri/lcm"
 )
 
+const (
+	it87ChipLabel   = "gpio_it87"
+	it87LCMPowerPin = 59
+)
+
 func main() {
 	// TODO(): Configuration.
 
@@ -28,27 +33,9 @@ func main() {
 	}
 	defer kbd.Close()
 
-	var chip *gpiod.Chip
-
-	// Find gpiochip representing it87.
-	for _, name := range gpiod.Chips() {
-		c, err := gpiod.NewChip(name, gpiod.WithConsumer("openlcmd"))
-		if err != nil {
-			panic(err)
-		}
-		if c.Label == "gpio_it87" {
-			chip = c
-			break
-		}
-		c.Close()
-	}
-	defer chip.Close()
-
-	powerLine, err := chip.RequestLine(59, gpiod.AsOutput(1))
-	if err != nil {
-		panic(err)
-	}
-	defer powerLine.Close()
+	powerCycle, pcClose := powerCycler()
+	defer pcClose()
+	_ = powerCycle
 
 	m, err := lcm.Open(lcm.DefaultTTY)
 	if err != nil {
@@ -56,6 +43,7 @@ func main() {
 	}
 	defer m.Close()
 
+	// Keep track of activity, sleep and reset the screen on timeout.
 	activityC := make(chan struct{}, 1)
 	activity := func() {
 		select {
@@ -68,7 +56,7 @@ func main() {
 		for {
 			select {
 			case <-activityC:
-			case <-time.After(5 * time.Second):
+			case <-time.After(15 * time.Second):
 				send(m, lcm.DisplayOff)
 				send(m, lcm.DisplayStatus)
 				resetText(m)
@@ -77,6 +65,7 @@ func main() {
 		}
 	}()
 
+	// Listen for protocol messages, mainly to react to button presses.
 	go func() {
 		for {
 			b := m.Recv()
@@ -116,6 +105,7 @@ func main() {
 		}
 	}()
 
+	// Initialization routine.
 	go func() {
 		// initalize(m)
 		// time.Sleep(time.Second)
@@ -128,8 +118,7 @@ func main() {
 		send(m, lcm.DisplayStatus)
 		setDisplay(m, lcm.DisplayBottom, 0, "")
 
-		// for {
-		next := lcm.Scroll(lcm.DisplayTop, "Welcome to openlcmd, the world is your oyster!")
+		next := lcm.Scroll(lcm.DisplayTop, "Welcome to openlcmd!")
 		for {
 			b, start, done := next()
 			send(m, b)
@@ -140,18 +129,13 @@ func main() {
 			if start || done {
 				time.Sleep(2 * time.Second)
 			} else {
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(75 * time.Millisecond)
 			}
 		}
-		// }
 
 		resetText(m)
 
 		activity()
-
-		time.Sleep(100 * time.Millisecond)
-		send(m, lcm.RequestVersion)
-		time.Sleep(300 * time.Millisecond)
 	}()
 
 	// TODO(mafredri): In case of unrecoverable errors
@@ -181,11 +165,50 @@ func setDisplay(m *lcm.LCM, line lcm.DisplayLine, indent int, text string) {
 	send(m, b)
 }
 
-func powerCycle(line *gpiod.Line) {
-	line.SetValue(0)
-	time.Sleep(250 * time.Millisecond)
-	line.SetValue(1)
+func powerCycler() (func(), func() error) {
+	var chip *gpiod.Chip
 
-	// It takes ~5 seconds for the screen to boot up.
-	time.Sleep(6 * time.Second)
+	// Find gpiochip representing it87.
+	for _, name := range gpiod.Chips() {
+		c, err := gpiod.NewChip(name, gpiod.WithConsumer("openlcmd"))
+		if err != nil {
+			panic(err)
+		}
+		if c.Label == it87ChipLabel {
+			chip = c
+			break
+		}
+		c.Close()
+	}
+
+	line, err := chip.RequestLine(it87LCMPowerPin, gpiod.AsOutput(1))
+	if err != nil {
+		chip.Close()
+		panic(err)
+	}
+
+	close := func() error {
+		err1 := line.Close()
+		err2 := chip.Close()
+		if err1 != nil {
+			return err1
+		}
+		return err2
+	}
+	cycle := func() {
+		line.SetValue(0)
+		time.Sleep(250 * time.Millisecond)
+		line.SetValue(1)
+
+		// It takes ~5 seconds for the screen to boot up.
+		time.Sleep(6 * time.Second)
+	}
+	return cycle, close
+}
+
+func requestVersion(m *lcm.LCM) {
+	// The version command is picky, needs time to think.
+	time.Sleep(100 * time.Millisecond)
+	send(m, lcm.RequestVersion)
+	time.Sleep(300 * time.Millisecond)
 }
