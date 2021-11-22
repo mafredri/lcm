@@ -46,6 +46,20 @@ func (m Message) ReplyOk() Message {
 	return nil
 }
 
+// Check that the message is valid (message must not include a checksum).
+func (m Message) Check() error {
+	if len(m) < 4 {
+		return errors.New("message too short")
+	}
+	if m.Type() != Command && m.Type() != Reply {
+		return errors.New("unknown message type")
+	}
+	if int(m[1])+3 != len(m) {
+		return errors.New("wrong message length")
+	}
+	return nil
+}
+
 // Type represents the message type.
 type Type byte
 
@@ -59,27 +73,27 @@ const (
 type Function byte
 
 const (
-	FOn      Function = 0x11
-	FClear   Function = 0x12
-	FVersion Function = 0x13
-	FStatus  Function = 0x22
-	FText    Function = 0x27
-	FButton  Function = 0x80
+	Fon      Function = 0x11
+	Fclear   Function = 0x12
+	Fversion Function = 0x13
+	Fstatus  Function = 0x22
+	Ftext    Function = 0x27
+	Fbutton  Function = 0x80
 )
 
 // Known commands (for sending to display).
 var (
 	// DisplayOn turns the display on.
-	DisplayOn Message = []byte{byte(Command), 0x01, byte(FOn), 0x01}
+	DisplayOn Message = []byte{byte(Command), 0x01, byte(Fon), 0x01}
 	// DisplayOff turns the display off.
-	DisplayOff Message = []byte{byte(Command), 0x01, byte(FOn), 0x00}
+	DisplayOff Message = []byte{byte(Command), 0x01, byte(Fon), 0x00}
 	// ClearDisplay clears the current text from the display.
 	// Called during re-initialization.
-	ClearDisplay Message = []byte{byte(Command), 0x01, byte(FClear), 0x01}
+	ClearDisplay Message = []byte{byte(Command), 0x01, byte(Fclear), 0x01}
 	// DisplayStatus has an unknown purpose. It is issued after
 	// DisplayOn in the init-routine and sometimes before/after
 	// updating the text.
-	DisplayStatus Message = []byte{byte(Command), 0x01, byte(FStatus), 0x00}
+	DisplayStatus Message = []byte{byte(Command), 0x01, byte(Fstatus), 0x00}
 	// RequestVersion reports the MCU version via command.
 	// The only observed version number so far is 0.1.2 on both
 	// AS604T and AS6204T.
@@ -92,7 +106,7 @@ var (
 	// => 0xf001130105
 	// <= 0xf101130005 (ack)
 	// <= 0xf0031300010209 (version)
-	RequestVersion Message = []byte{byte(Command), 0x01, byte(FVersion), 0x01}
+	RequestVersion Message = []byte{byte(Command), 0x01, byte(Fversion), 0x01}
 )
 
 var (
@@ -137,7 +151,7 @@ var (
 	// UnknownReply0x10, unused in the lcmd binary. This is an error
 	// reply issued by the display as a response to the On function,
 	// however, it's purpose in the lcmd binary is unknown.
-	UnknownReply0x11 Message = []byte{byte(Reply), 0x01, byte(FOn), 0x02}
+	UnknownReply0x11 Message = []byte{byte(Reply), 0x01, byte(Fon), 0x02}
 )
 
 // Button represents a LCM button.
@@ -187,7 +201,7 @@ func SetDisplay(line DisplayLine, indent int, text string) (raw Message, err err
 		text += strings.Repeat(" ", 16-len(text))
 	}
 
-	raw = append([]byte{byte(Command), 0x12, byte(FText), byte(line), byte(indent)}, []byte(text)...)
+	raw = append([]byte{byte(Command), 0x12, byte(Ftext), byte(line), byte(indent)}, []byte(text)...)
 	return raw, nil
 }
 

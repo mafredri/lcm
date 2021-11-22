@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"os"
 	"os/signal"
@@ -21,11 +22,32 @@ const (
 
 func main() {
 	// TODO(): Configuration.
-
-	log.SetFlags(log.Flags() | log.Lmicroseconds)
+	debug := flag.Bool("debug", false, "Enable debug logging")
+	systemd := flag.Bool("systemd", false, "Runs in systemd mode (removes timestamps from logging)")
+	flag.Parse()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	flags := log.Flags()
+	if *systemd {
+		flags ^= (log.Ldate | log.Ltime)
+	} else {
+		flags |= log.Lmicroseconds
+		log.SetPrefix("[openlcmd] ")
+	}
+	log.SetFlags(flags)
+
+	var opts []lcm.OpenOption
+	if *debug {
+		opts = append(opts, lcm.WithLogger(log.New(os.Stderr, "[lcm] ", flags)))
+	}
+
+	m, err := lcm.Open(lcm.DefaultTTY, opts...)
+	if err != nil {
+		log.Println(err)
+	}
+	defer m.Close()
 
 	kbd, err := uinput.CreateKeyboard("/dev/uinput", []byte("openlcmd"))
 	if err != nil {
@@ -36,12 +58,6 @@ func main() {
 	powerCycle, pcClose := powerCycler()
 	defer pcClose()
 	_ = powerCycle
-
-	m, err := lcm.Open(lcm.DefaultTTY)
-	if err != nil {
-		log.Println(err)
-	}
-	defer m.Close()
 
 	// Keep track of activity, sleep and reset the screen on timeout.
 	activityC := make(chan struct{}, 1)
@@ -72,8 +88,8 @@ func main() {
 			switch b.Type() {
 			case lcm.Command:
 				switch b.Function() {
-				case lcm.FButton:
-					btn := lcm.Button(b[3])
+				case lcm.Fbutton:
+					btn := lcm.Button(b.Value()[0])
 					switch btn {
 					case lcm.Up:
 						kbd.KeyPress(uinput.KeyUp)
@@ -91,14 +107,12 @@ func main() {
 					// press, so reset inactivity timer.
 					activity()
 
-				case lcm.FVersion:
-					log.Printf("Detected LCM MCU version %d.%d.%d", b[3], b[4], b[5])
+				case lcm.Fversion:
+					ver := b.Value()
+					log.Printf("Detected LCM MCU version %d.%d.%d", ver[0], ver[1], ver[2])
 				}
 			case lcm.Reply:
-				// if b.Function() == lcm.FText && !b.Ok() {
-				// 	send(m, lcm.UnknownCommand0x21)
-				// }
-				// Command done.
+
 			default:
 				return
 			}
@@ -107,16 +121,11 @@ func main() {
 
 	// Initialization routine.
 	go func() {
-		// initalize(m)
-		// time.Sleep(time.Second)
-		//
-		// send(m, lcm.UnknownCommand0x23)
-		// time.Sleep(time.Second)
-		// os.Exit(1)
-
 		send(m, lcm.DisplayOn)
 		send(m, lcm.DisplayStatus)
 		setDisplay(m, lcm.DisplayBottom, 0, "")
+
+		requestVersion(m)
 
 		next := lcm.Scroll(lcm.DisplayTop, "Welcome to openlcmd!")
 		for {
@@ -129,7 +138,7 @@ func main() {
 			if start || done {
 				time.Sleep(2 * time.Second)
 			} else {
-				time.Sleep(75 * time.Millisecond)
+				time.Sleep(25 * time.Millisecond)
 			}
 		}
 
@@ -137,9 +146,6 @@ func main() {
 
 		activity()
 	}()
-
-	// TODO(mafredri): In case of unrecoverable errors
-	// powerCycle(powerLine)
 
 	<-ctx.Done()
 }

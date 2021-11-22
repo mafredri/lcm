@@ -11,10 +11,10 @@ package lcm
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/pkg/term"
@@ -68,10 +68,41 @@ type LCM struct {
 	writeC   chan sendMessage
 	rawReadC chan Message
 	readC    chan []byte
+	opts     openOptions
+}
+
+type openOptions struct {
+	l Logger
+}
+
+// OpenOption configures LCM during open.
+type OpenOption func(*openOptions)
+
+// Logger represents a generic logger (e.g. from the log package).
+type Logger interface {
+	Printf(format string, v ...interface{})
+}
+
+type noopLogger struct{}
+
+func (noopLogger) Printf(format string, v ...interface{}) {}
+
+// WithLogger sets the logger used by LCM (default none).
+func WithLogger(l Logger) OpenOption {
+	return func(o *openOptions) {
+		o.l = l
+	}
 }
 
 // Open opens the serial port for LCM.
-func Open(tty string) (*LCM, error) {
+func Open(tty string, opt ...OpenOption) (*LCM, error) {
+	opts := openOptions{
+		l: noopLogger{},
+	}
+	for _, o := range opt {
+		o(&opts)
+	}
+
 	s, err := term.Open(tty, term.Speed(115200), term.RawMode)
 	if err != nil {
 		return nil, err
@@ -92,6 +123,7 @@ func Open(tty string) (*LCM, error) {
 		writeC:   make(chan sendMessage, 2),
 		rawReadC: make(chan Message, 2),
 		readC:    make(chan []byte, 5),
+		opts:     opts,
 	}
 
 	go m.read()
@@ -116,6 +148,11 @@ type sendMessage struct {
 // 	m.Send(msg, lcm.WithRetryLimit(100), lcm.WithReplyTimeout(5 * time.Millisecond))
 //
 func (m *LCM) Send(msg Message) error {
+	err := msg.Check()
+	if err != nil {
+		return err
+	}
+
 	data := make([]byte, len(msg), len(msg)+1)
 	copy(data, msg)
 	data = append(data, checksum(data))
@@ -148,16 +185,16 @@ func (m *LCM) read() {
 		err := copyBytes(raw, r)
 		if err != nil {
 			if errors.As(err, &parseErr) {
-				log.Printf("LCM.read: %v", err)
+				m.opts.l.Printf("LCM.read: %v", err)
 				continue
 			}
 			// TODO(mafredri): Close LCM.
-			log.Printf("LCM.read: fatal: %v", err)
+			m.opts.l.Printf("LCM.read: fatal: %v", err)
 			return
 		}
 
 		b := Message(raw.Bytes())
-		log.Printf("LCM.read: OK %#x", b)
+		m.opts.l.Printf("LCM.read: OK %#x", b)
 		m.rawReadC <- b
 	}
 }
@@ -165,7 +202,7 @@ func (m *LCM) read() {
 // write to the serial port.
 func (m *LCM) write(data []byte) error {
 	n, err := m.s.Write(data)
-	log.Printf("LCM.write: wrote: %#x %d, err: %v", data, n, err)
+	m.opts.l.Printf("LCM.write: wrote: %#x %d, err: %v", data, n, err)
 	if err != nil {
 		return err
 	}
@@ -192,7 +229,7 @@ func (m *LCM) handle() {
 			case read = <-m.rawReadC:
 
 			case <-replyTimeout:
-				log.Printf("LCM.handle: write(%d): timeout, retry...", id)
+				m.opts.l.Printf("LCM.handle: write(%d): timeout, retry...", id)
 				retry()
 
 			case <-m.ctx.Done():
@@ -206,20 +243,20 @@ func (m *LCM) handle() {
 			// before the next one is handled.
 			case w := <-m.writeC:
 				id++
-				log.Printf("LCM.handle: write(%d): %#x", id, w.data)
+				m.opts.l.Printf("LCM.handle: write(%d): %#x", id, w.data)
 
 				// Define reply function for verifying
 				// that the command was successful.
 				handleReply = func(reply Message) bool {
 					if reply.Type() == Reply && reply.Function() == w.data.Function() {
 						if reply.Ok() {
-							log.Printf("LCM.handle: write(%d): reply OK", id)
+							m.opts.l.Printf("LCM.handle: write(%d): reply OK", id)
 							close(w.err)
 							handleReply = nil
 							retry = nil
 							replyTimeout = nil
 						} else {
-							log.Printf("LCM.handle: write(%d): reply ERROR (%#x), retrying...", id, reply.Value())
+							m.opts.l.Printf("LCM.handle: write(%d): reply ERROR (%#x), retrying...", id, reply.Value())
 							retry()
 						}
 
@@ -254,7 +291,7 @@ func (m *LCM) handle() {
 					tries++
 					err := m.write(w.data)
 					if err != nil {
-						log.Printf("LCM.handle: write(%d): %#x: %v", id, w.data, err)
+						m.opts.l.Printf("LCM.handle: write(%d): %#x: %v", id, w.data, err)
 						wErr = err
 					}
 
@@ -274,7 +311,7 @@ func (m *LCM) handle() {
 
 		switch read.Type() {
 		case Command:
-			log.Printf("LCM.handle: read(Command): %#x", read.Function())
+			m.opts.l.Printf("LCM.handle: read(Command): %#x", read.Function())
 
 			reply := read.ReplyOk()
 			reply = append(reply, checksum(reply))
@@ -292,20 +329,20 @@ func (m *LCM) handle() {
 				time.Sleep(DefaultWriteDelay)
 
 				err := m.write(reply)
-				log.Printf("LCM.handle: read(Command): sent ack reply %#x, err: %v", reply, err)
+				m.opts.l.Printf("LCM.handle: read(Command): sent ack reply %#x, err: %v", reply, err)
 			} else {
-				log.Printf("LCM.handle: read(Command): protocol ack disabled, not sending reply %#v", reply)
+				m.opts.l.Printf("LCM.handle: read(Command): protocol ack disabled, not sending reply %#v", reply)
 			}
 
 		case Reply:
-			log.Printf("LCM.handle: read(Reply): unhandled reply (%#x): %#x", read.Function(), read)
+			m.opts.l.Printf("LCM.handle: read(Reply): unhandled reply (%#x): %#x", read.Function(), read)
 
 		default:
-			log.Printf("LCM.handle: read(Unknown): %#x", read)
+			m.opts.l.Printf("LCM.handle: read(Unknown): %#x", read)
 		}
 
 		read = read[:len(read)-1] // Discard checksum.
-		log.Printf("LCM.handle: read: forwarding message: %#x", read)
+		m.opts.l.Printf("LCM.handle: read: forwarding message: %#x", read)
 
 		select {
 		case m.readC <- read:
@@ -313,7 +350,7 @@ func (m *LCM) handle() {
 		default:
 			select {
 			case <-m.readC:
-				log.Printf("LCM.handle: read: buffer full, discarded earliest message")
+				m.opts.l.Printf("LCM.handle: read: buffer full, discarded earliest message")
 			default:
 				// Buffer got depleted.
 			}
