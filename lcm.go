@@ -26,7 +26,7 @@ const (
 	// DefaultReplyTimeout defines how long we wait for a reply,
 	// usually one is received within 10ms. The ASUSTOR daemon
 	// resends messages after 100ms if no response is received.
-	DefaultReplyTimeout = 20 * time.Millisecond
+	DefaultReplyTimeout = 15 * time.Millisecond
 	// DefaultRetryLimit defines how many times a command will be
 	// retried until giving up. Given the default reply timeout,
 	// this could lead to nothing happening on the screen for about
@@ -34,7 +34,7 @@ const (
 	//
 	// ASUSTOR tries up to 100 times, however, this rarely helps
 	// clear up the communication error.
-	DefaultRetryLimit = 25
+	DefaultRetryLimit = 50
 	// DefaultWriteDelay defines how long to wait before writing the
 	// next message. This is used both when writing commands and
 	// responding to commands from the display.
@@ -144,10 +144,10 @@ type sendMessage struct {
 // MCU to clear its buffer. This helps resolve communication errors
 // quickly. We don't really know how big the buffer is, but a display
 // update takes up 22 bytes and standard commands 5. Out of tested
-// values 32 seems to resolve conflicts most efficiently, >48 perform
+// values 33 seems to resolve conflicts most efficiently, >48 perform
 // poorly as does 22-23.
 func (m *LCM) forceFlushMCU() {
-	m.write(bytes.Repeat([]byte{0}, 32))
+	m.write(bytes.Repeat([]byte{0}, 33))
 	// Small delay to allow the MCU to process the influx.
 	time.Sleep(250 * time.Microsecond)
 }
@@ -269,6 +269,9 @@ func (m *LCM) handle() {
 							retry = nil
 							replyTimeout = nil
 						} else {
+							// We don't forceibly flush the MCU here
+							// because it had the sensibility to at
+							// least respond to our command.
 							m.opts.l.Printf("LCM.handle: write(%d): reply ERROR (%#x), retrying...", id, reply.Value())
 							retry()
 						}
