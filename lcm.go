@@ -11,7 +11,6 @@ package lcm
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -140,15 +139,33 @@ type sendMessage struct {
 	writeDelay   time.Duration
 }
 
-// forceFlushMCU sends enough zero bytes (inferred by testing) to the
-// MCU to clear its buffer. This helps resolve communication errors
-// quickly. We don't really know how big the buffer is, but a display
-// update takes up 22 bytes and standard commands 5. Out of tested
-// values 33 seems to resolve conflicts most efficiently, >48 perform
-// poorly as does 22-23.
+// forceFlushMCU sends a nonsense command in an attempt to flush the MCU
+// receive buffer. Sometimes when the MCU gets stuck the only way to
+// escape the loop is to send another command, retrying the previous
+// command will keep failing in perpetuity.
+//
+// The fflush (0x00) command seems to have no side-effect, but funnily
+// enough, the MCU will reply that the command was successful. Perhaps
+// it is a real command but it's not used anywhere else.
+//
+// Also, sending two of these commands in one go seems to increase the
+// speed of recovery further.
+//
+// Other attemps included sending enough zero bytes to clear the receive
+// buffer, but while effective, not foolproof (a good number of bytes
+// was 32 or 33) but still unrecoverable states were observed.
 func (m *LCM) forceFlushMCU() {
-	m.write(bytes.Repeat([]byte{0}, 33))
-	// Small delay to allow the MCU to process the influx.
+	m.opts.l.Printf("LCM.forceFlushMCU: trying to flush MCU read buffer...")
+
+	data := make([]byte, len(flushMCUBuffer), len(flushMCUBuffer)+1*2)
+	copy(data, flushMCUBuffer)
+	sum := checksum(data)
+	data = append(data, sum)
+	data = append(data, data...)
+
+	_, _ = m.s.Write(data)
+
+	// Small delay to allow the MCU to process the message.
 	time.Sleep(250 * time.Microsecond)
 }
 
@@ -269,11 +286,9 @@ func (m *LCM) handle() {
 							retry = nil
 							replyTimeout = nil
 						} else {
-							// We don't forceibly flush the MCU here
-							// because it had the sensibility to at
-							// least respond to our command.
-							m.opts.l.Printf("LCM.handle: write(%d): reply ERROR (%#x), retrying...", id, reply.Value())
-							retry()
+							// We don't always forceibly flush the MCU here because it had
+							// the sensibility to at least respond to our command.
+							m.opts.l.Printf("LCM.handle: write(%d): reply ERROR (%#x)", id, reply.Value())
 						}
 
 						return true
@@ -351,7 +366,11 @@ func (m *LCM) handle() {
 			}
 
 		case Reply:
-			m.opts.l.Printf("LCM.handle: read(Reply): unhandled reply (%#x): %#x", read.Function(), read)
+			if read.Function() == fflush {
+				m.opts.l.Printf("LCM.handle: read(Reply): received ack for flush: %#x", read)
+			} else {
+				m.opts.l.Printf("LCM.handle: read(Reply): unhandled reply (%#x): %#x", read.Function(), read)
+			}
 
 		default:
 			m.opts.l.Printf("LCM.handle: read(Unknown): %#x", read)

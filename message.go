@@ -73,6 +73,7 @@ const (
 type Function byte
 
 const (
+	fflush   Function = 0x00 // Not a real function.
 	Fon      Function = 0x11
 	Fclear   Function = 0x12
 	Fversion Function = 0x13
@@ -83,6 +84,9 @@ const (
 
 // Known commands (for sending to display).
 var (
+	// flushMCUBuffer is a made up message but is used to resolve
+	// serial communication errors, see (*LCM).forceFlushMCU.
+	flushMCUBuffer Message = []byte{byte(Command), 0x01, byte(fflush), 0x00}
 	// DisplayOn turns the display on.
 	DisplayOn Message = []byte{byte(Command), 0x01, byte(Fon), 0x01}
 	// DisplayOff turns the display off.
