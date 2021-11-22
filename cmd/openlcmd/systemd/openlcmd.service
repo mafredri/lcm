@@ -2,7 +2,7 @@
 Description=ASUSTOR LCD Daemon
 
 [Service]
-ExecStart=/usr/local/sbin/openlcmd
+ExecStart=/usr/local/sbin/openlcmd -systemd -debug
 PIDFile=/run/openlcmd.pid
 RestartSec=5
 Restart=on-failure

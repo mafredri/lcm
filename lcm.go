@@ -326,7 +326,7 @@ func (m *LCM) handle() {
 						wErr = err
 					}
 
-					replyTimeout = time.After(DefaultReplyTimeout)
+					replyTimeout = time.After(w.replyTimeout)
 				}
 
 				retry() // Initiate first try.
