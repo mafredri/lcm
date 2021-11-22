@@ -1,0 +1,11 @@
+[Unit]
+Description=ASUSTOR LCD Daemon
+
+[Service]
+ExecStart=/usr/local/sbin/openlcmd
+PIDFile=/run/openlcmd.pid
+RestartSec=5
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
