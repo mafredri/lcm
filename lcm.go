@@ -140,6 +140,18 @@ type sendMessage struct {
 	writeDelay   time.Duration
 }
 
+// forceFlushMCU sends enough zero bytes (inferred by testing) to the
+// MCU to clear its buffer. This helps resolve communication errors
+// quickly. We don't really know how big the buffer is, but a display
+// update takes up 22 bytes and standard commands 5. Out of tested
+// values 32 seems to resolve conflicts most efficiently, >48 perform
+// poorly as does 22-23.
+func (m *LCM) forceFlushMCU() {
+	m.write(bytes.Repeat([]byte{0}, 32))
+	// Small delay to allow the MCU to process the influx.
+	time.Sleep(250 * time.Microsecond)
+}
+
 // Send messages to the display. Note that checksum should be omitted,
 // it is handled transparently as part of the protocol implementation.
 //
@@ -230,6 +242,7 @@ func (m *LCM) handle() {
 
 			case <-replyTimeout:
 				m.opts.l.Printf("LCM.handle: write(%d): timeout, retry...", id)
+				m.forceFlushMCU()
 				retry()
 
 			case <-m.ctx.Done():
