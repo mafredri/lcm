@@ -23,13 +23,17 @@ import (
 
 const (
 	// DefaultReplyTimeout defines how long we wait for a reply,
-	// usually one is received within 10ms. The ASUSTOR daemon
-	// resends messages after 100ms if no response is received.
+	// usually one is received in under 10ms. We keep this timeout
+	// fairly tight because a longer delay rarely helps.
+	//
+	// The ASUSTOR daemon resends messages after 100ms if no
+	// response is received. But even this can leads to deadlocks
+	// where the same error will be echoed back time and time again.
 	DefaultReplyTimeout = 15 * time.Millisecond
 	// DefaultRetryLimit defines how many times a command will be
 	// retried until giving up. Given the default reply timeout,
 	// this could lead to nothing happening on the screen for about
-	// one second.
+	// 750ms.
 	//
 	// ASUSTOR tries up to 100 times, however, this rarely helps
 	// clear up the communication error.
@@ -39,20 +43,11 @@ const (
 	// responding to commands from the display.
 	//
 	// The ASUSTOR lcmd binary uses 15ms and 45ms sleeps between
-	// certain commands, but this seems excessive. Instead we use
-	// increasing backoff where applicable because spamming at the
-	// same interval can lead to the display not responding at all.
-	DefaultWriteDelay = 5000 * time.Microsecond
-	// ProtocolSendAck specifies if we should send acknowledgement
-	// replies to the screen when it sends us commands (e.g. button
-	// press or firmware version).
-	//
-	// If the screen sent us a command, technically we should send
-	// an acknowledgement reply. However, it often causes the
-	// following command (from us) to become corrupt. The frequency
-	// of the corruption can be lowered with delays, but then again,
-	// it seems like the display does not care if we reply or not.
-	ProtocolSendAck = false
+	// certain commands, but this seems excessive.
+	DefaultWriteDelay = 250 * time.Microsecond
+	// forceFlushDelay specifies how long to wait after attempting
+	// to flush the MCU receive buffer.
+	forceFlushDelay = 250 * time.Microsecond
 )
 
 // DefaultTTY represents the default serial tty for LCM.
@@ -71,11 +66,27 @@ type LCM struct {
 }
 
 type openOptions struct {
-	l Logger
+	ack bool
+	l   Logger
 }
 
 // OpenOption configures LCM during open.
 type OpenOption func(*openOptions)
+
+// EnableProtocolAckReply specifies if LCM should send acknowledgement
+// replies to the screen when it sends us a command (e.g. button press
+// or firmware version).
+//
+// If the screen sent us a command, technically we should acknowledge it
+// by sending a reply indicating it was successful. However, it often
+// causes later commands (from us) to become corrupt. The frequency of
+// the corruption can be lowered with delays, but then again, it seems
+// like the display does not care if we reply or not.
+func EnableProtocolAckReply() OpenOption {
+	return func(o *openOptions) {
+		o.ack = true
+	}
+}
 
 // Logger represents a generic logger (e.g. from the log package).
 type Logger interface {
@@ -166,7 +177,7 @@ func (m *LCM) forceFlushMCU() {
 	_, _ = m.s.Write(data)
 
 	// Small delay to allow the MCU to process the message.
-	time.Sleep(250 * time.Microsecond)
+	time.Sleep(forceFlushDelay)
 }
 
 // Send messages to the display. Note that checksum should be omitted,
@@ -346,7 +357,7 @@ func (m *LCM) handle() {
 
 			reply := read.ReplyOk()
 			reply = append(reply, checksum(reply))
-			if ProtocolSendAck {
+			if m.opts.ack {
 				// A delay is necessary because otherwise the
 				// serial communication protcol is guaranteed
 				// to become corrupt. What usually works quite
