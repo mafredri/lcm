@@ -23,14 +23,16 @@ const (
 func main() {
 	// TODO(): Configuration.
 	debug := flag.Bool("debug", false, "Enable debug logging")
-	systemd := flag.Bool("systemd", false, "Runs in systemd mode (removes timestamps from logging)")
+	enableSystemd := flag.Bool("systemd", false, "Runs in systemd mode (removes timestamps from logging)")
+	enableUinput := flag.Bool("uinput", false, "Send button presses via uinput virtual keyboard (/devices/virtual/input)")
+
 	flag.Parse()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	flags := log.Flags()
-	if *systemd {
+	if *enableSystemd {
 		flags ^= (log.Ldate | log.Ltime)
 	} else {
 		flags |= log.Lmicroseconds
@@ -49,11 +51,14 @@ func main() {
 	}
 	defer m.Close()
 
-	kbd, err := uinput.CreateKeyboard("/dev/uinput", []byte("openlcmd"))
-	if err != nil {
-		panic(err)
+	var kbd uinput.Keyboard
+	if *enableUinput {
+		kbd, err := uinput.CreateKeyboard("/dev/uinput", []byte("openlcmd"))
+		if err != nil {
+			panic(err)
+		}
+		defer kbd.Close()
 	}
-	defer kbd.Close()
 
 	powerCycle, pcClose := powerCycler()
 	defer pcClose()
@@ -90,18 +95,22 @@ func main() {
 				switch b.Function() {
 				case lcm.Fbutton:
 					btn := lcm.Button(b.Value()[0])
+					kp := 0
 					switch btn {
 					case lcm.Up:
-						kbd.KeyPress(uinput.KeyUp)
+						kp = uinput.KeyUp
 					case lcm.Down:
-						kbd.KeyPress(uinput.KeyDown)
+						kp = uinput.KeyDown
 					case lcm.Back:
-						kbd.KeyPress(uinput.KeyBack)
+						kp = uinput.KeyBack
 					case lcm.Enter:
-						kbd.KeyPress(uinput.KeyEnter)
+						kp = uinput.KeyEnter
 					}
-
 					log.Printf("Button press: %s", btn)
+
+					if kbd != nil && kp > 0 {
+						kbd.KeyPress(kp)
+					}
 
 					// Screen is implicitly woken on button
 					// press, so reset inactivity timer.
@@ -125,8 +134,6 @@ func main() {
 		send(m, lcm.DisplayStatus)
 		setDisplay(m, lcm.DisplayBottom, 0, "")
 
-		requestVersion(m)
-
 		next := lcm.Scroll(lcm.DisplayTop, "Welcome to openlcmd!")
 		for {
 			b, start, done := next()
@@ -138,7 +145,7 @@ func main() {
 			if start || done {
 				time.Sleep(2 * time.Second)
 			} else {
-				time.Sleep(25 * time.Millisecond)
+				time.Sleep(75 * time.Millisecond)
 			}
 		}
 
@@ -185,6 +192,11 @@ func powerCycler() (func(), func() error) {
 			break
 		}
 		c.Close()
+	}
+
+	if chip == nil {
+		skip := func() { log.Printf("Could not find %s gpiochip, skipping power cycle...", it87ChipLabel) }
+		return skip, func() error { return nil }
 	}
 
 	line, err := chip.RequestLine(it87LCMPowerPin, gpiod.AsOutput(1))
