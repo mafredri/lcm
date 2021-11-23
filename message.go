@@ -2,6 +2,7 @@ package lcm
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -247,4 +248,27 @@ func Scroll(line DisplayLine, text string) (next func() (raw Message, start, don
 		b, _ := SetDisplay(line, 0, trunc)
 		return b, start, done
 	}
+}
+
+// ShowAllCharCodes allows all character codes to be
+func ShowAllCharCodes() (next func() (line1, line2 Message, start, done bool), goBack func()) {
+	var i uint8
+	chars := make([]byte, 16)
+	done := false
+	next = func() (Message, Message, bool, bool) {
+		for j := 0; j < 16; j++ {
+			chars[j] = 1 + i + uint8(j)
+		}
+		line1, _ := SetDisplay(DisplayTop, 0, string(chars))
+		line2, _ := SetDisplay(DisplayBottom, 0, fmt.Sprintf("%03d..........%03d", i, i+15))
+
+		start := i == 0
+		i += 16
+		if i == 0 {
+			done = true
+		}
+
+		return line1, line2, start, done
+	}
+	return next, func() { i -= 16 * 2 }
 }

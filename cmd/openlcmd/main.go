@@ -87,6 +87,7 @@ func main() {
 	}()
 
 	// Listen for protocol messages, mainly to react to button presses.
+	btnCh := make(chan lcm.Button)
 	go func() {
 		for {
 			b := m.Recv()
@@ -107,6 +108,10 @@ func main() {
 						kp = uinput.KeyEnter
 					}
 					log.Printf("Button press: %s", btn)
+					select {
+					case btnCh <- btn:
+					default:
+					}
 
 					if kbd != nil && kp > 0 {
 						kbd.KeyPress(kp)
@@ -146,6 +151,21 @@ func main() {
 				time.Sleep(2 * time.Second)
 			} else {
 				time.Sleep(75 * time.Millisecond)
+			}
+		}
+
+		nextChars, goBack := lcm.ShowAllCharCodes()
+		for {
+			b1, b2, _, _ := nextChars()
+			send(m, b1)
+			send(m, b2)
+			activity()
+
+			btn := <-btnCh
+			if btn == lcm.Up {
+				goBack()
+			} else if btn == lcm.Back || btn == lcm.Enter {
+				break
 			}
 		}
 
