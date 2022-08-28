@@ -10,14 +10,8 @@ import (
 	"time"
 
 	"github.com/bendahl/uinput"
-	"github.com/warthog618/gpiod"
 
 	"github.com/mafredri/lcm"
-)
-
-const (
-	it87ChipLabel   = "gpio_it87"
-	it87LCMPowerPin = 59
 )
 
 func main() {
@@ -53,16 +47,18 @@ func main() {
 
 	var kbd uinput.Keyboard
 	if *enableUinput {
-		kbd, err := uinput.CreateKeyboard("/dev/uinput", []byte("openlcmd"))
+		kbd, err = uinput.CreateKeyboard("/dev/uinput", []byte("openlcmd"))
 		if err != nil {
 			panic(err)
 		}
 		defer kbd.Close()
 	}
 
-	powerCycle, pcClose := powerCycler()
-	defer pcClose()
-	_ = powerCycle
+	power, err := lcm.NewPower("openlcmd")
+	if err != nil {
+		log.Printf("power cycling disabled: %v", err)
+	}
+	defer power.Close()
 
 	// Keep track of activity, sleep and reset the screen on timeout.
 	activityC := make(chan struct{}, 1)
@@ -196,52 +192,6 @@ func setDisplay(m *lcm.LCM, line lcm.DisplayLine, indent int, text string) {
 		panic(err)
 	}
 	send(m, b)
-}
-
-func powerCycler() (func(), func() error) {
-	var chip *gpiod.Chip
-
-	// Find gpiochip representing it87.
-	for _, name := range gpiod.Chips() {
-		c, err := gpiod.NewChip(name, gpiod.WithConsumer("openlcmd"))
-		if err != nil {
-			panic(err)
-		}
-		if c.Label == it87ChipLabel {
-			chip = c
-			break
-		}
-		c.Close()
-	}
-
-	if chip == nil {
-		skip := func() { log.Printf("Could not find %s gpiochip, skipping power cycle...", it87ChipLabel) }
-		return skip, func() error { return nil }
-	}
-
-	line, err := chip.RequestLine(it87LCMPowerPin, gpiod.AsOutput(1))
-	if err != nil {
-		chip.Close()
-		panic(err)
-	}
-
-	close := func() error {
-		err1 := line.Close()
-		err2 := chip.Close()
-		if err1 != nil {
-			return err1
-		}
-		return err2
-	}
-	cycle := func() {
-		line.SetValue(0)
-		time.Sleep(250 * time.Millisecond)
-		line.SetValue(1)
-
-		// It takes ~5 seconds for the screen to boot up.
-		time.Sleep(6 * time.Second)
-	}
-	return cycle, close
 }
 
 func requestVersion(m *lcm.LCM) {
