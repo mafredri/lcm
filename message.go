@@ -74,13 +74,16 @@ const (
 type Function byte
 
 const (
-	fflush   Function = 0x00 // Not a real function.
-	Fon      Function = 0x11
-	Fclear   Function = 0x12
-	Fversion Function = 0x13
-	Fstatus  Function = 0x22
-	Ftext    Function = 0x27
-	Fbutton  Function = 0x80
+	fflush     Function = 0x00 // Not a real function.
+	Fon        Function = 0x11
+	Fclear     Function = 0x12
+	Fversion   Function = 0x13
+	fsetClear2 Function = 0x21
+	Fstatus    Function = 0x22
+	Fchar      Function = 0x25
+	Fclear2    Function = 0x26
+	Ftext      Function = 0x27
+	Fbutton    Function = 0x80
 )
 
 // Known commands (for sending to display).
@@ -88,16 +91,24 @@ var (
 	// flushMCUBuffer is a made up message but is used to resolve
 	// serial communication errors, see (*LCM).forceFlushMCU.
 	flushMCUBuffer Message = []byte{byte(Command), 0x01, byte(fflush), 0x00}
+
 	// DisplayOn turns the display on.
 	DisplayOn Message = []byte{byte(Command), 0x01, byte(Fon), 0x01}
 	// DisplayOff turns the display off.
 	DisplayOff Message = []byte{byte(Command), 0x01, byte(Fon), 0x00}
 	// ClearDisplay clears the current text from the display.
-	// Called during re-initialization.
+	// Called during re-initialization in lcmd.
 	ClearDisplay Message = []byte{byte(Command), 0x01, byte(Fclear), 0x01}
+	// ClearDisplayPrefix clears the screen and its behavior is
+	// altered by AlterClearDisplayPrefix.
+	//
+	// It is unused in lcmd.
+	ClearDisplayPrefix Message = []byte{byte(Command), 0x01, byte(Fclear2), 0x00}
 	// DisplayStatus has an unknown purpose. It is issued after
 	// DisplayOn in the init-routine and sometimes before/after
 	// updating the text.
+	//
+	// It could have some other purpose, like SetClearDisplayPrefix.
 	DisplayStatus Message = []byte{byte(Command), 0x01, byte(Fstatus), 0x00}
 	// RequestVersion reports the MCU version via command.
 	// The only observed version number so far is 0.1.2 on both
@@ -114,28 +125,24 @@ var (
 	RequestVersion Message = []byte{byte(Command), 0x01, byte(Fversion), 0x01}
 )
 
-var (
-	// UnknownCommand0x21, sometimes used between text updates,
-	// after setting line 0 and before clearing line 1.
-	//
-	// Observed behavior: Nothing.
-	UnknownCommand0x21 Message = []byte{byte(Command), 0x01, 0x21, 0x00}
-	// UnknownCommand0x23, unused. Values come from function arguments.
-	//
-	// Observed behavior: Nothing.
-	UnknownCommand0x23 Message = []byte{byte(Command), 0x02, 0x23, 0x00, 0x00}
-	// UnknownCommand0x25, used by Lcmd_User_Menu_Ctl. Values from
-	// data in memory, may have something to do with editing menus.
-	//
-	// Observed behavior: Places one artifact on the display, location
-	// depends on values.
-	UnknownCommand0x25 Message = []byte{byte(Command), 0x03, 0x25, 0x00, 0x00, 0x00}
-	// UnknownCommand0x26, unused.
-	//
-	// Observed behavior: Clears the display so that there is only
-	// one underscore on the top row.
-	UnknownCommand0x26 Message = []byte{byte(Command), 0x01, 0x26, 0x00}
-)
+// UnknownCommand0x23, unused. Values come from function arguments.
+//
+// Observed behavior: Nothing.
+var UnknownCommand0x23 Message = []byte{byte(Command), 0x02, 0x23, 0x00, 0x00}
+
+// SetClearDisplayPrefix changes the behavior of ClearDisplayPrefix.
+//
+// Known values and behavior of ClearDisplayPrefix:
+// * 0 = Clear screen (fully)
+// * 1 = Clear screen with underscore
+// * 2 = Clear screen, blink between underscore and block
+//
+// In lcmd this command is sometimes used after the text for line 0 has
+// been set and before line 1 is cleared with spaces. Unless it has
+// other unobserved behaviors, it's probably unused in practice.
+func SetClearDisplayPrefix(method int) Message {
+	return []byte{byte(Command), 0x01, byte(fsetClear2), byte(method)}
+}
 
 // Replies are acknowledgements to commands, when the payload bit is
 // zero, the command was successfully received (and applied), when it's
@@ -208,6 +215,20 @@ func SetDisplay(line DisplayLine, indent int, text string) (raw Message, err err
 
 	raw = append([]byte{byte(Command), 0x12, byte(Ftext), byte(line), byte(indent)}, []byte(text)...)
 	return raw, nil
+}
+
+// SetDisplayCharacter writes a single character onto the display in the
+// specificed location.
+//
+// In lcmd, it is used by Lcmd_User_Menu_Ctl.
+func SetDisplayCharacter(line DisplayLine, column int, char byte) (Message, error) {
+	if line != DisplayTop && line != DisplayBottom {
+		return nil, errors.New("display line out of bounds")
+	}
+	if column > 0xF {
+		return nil, errors.New("column out of bounds, [0, 15]")
+	}
+	return []byte{byte(Command), 0x03, byte(Fchar), byte(line), byte(column), char}, nil
 }
 
 // Scroll the text on the display. Each invocation of next() will return

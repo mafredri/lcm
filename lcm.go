@@ -19,8 +19,6 @@ import (
 	"github.com/pkg/term"
 )
 
-//go:generate protoc --proto_path=. --go_out=. --go-grpc_out=. ./stream/stream.proto
-
 const (
 	// DefaultReplyTimeout defines how long we wait for a reply,
 	// usually one is received in under 10ms. We keep this timeout
@@ -185,8 +183,7 @@ func (m *LCM) forceFlushMCU() {
 //
 // TODO(mafredri): Add support for functional arguments:
 //
-// 	m.Send(msg, lcm.WithRetryLimit(100), lcm.WithReplyTimeout(5 * time.Millisecond))
-//
+//	m.Send(msg, lcm.WithRetryLimit(100), lcm.WithReplyTimeout(5 * time.Millisecond))
 func (m *LCM) Send(msg Message) error {
 	err := msg.Check()
 	if err != nil {
