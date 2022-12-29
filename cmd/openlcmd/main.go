@@ -49,7 +49,7 @@ func main() {
 
 	m, err := lcm.Open(lcm.DefaultTTY, opts...)
 	if err != nil {
-		log.Println(err)
+		panic(err)
 	}
 	defer m.Close()
 
