@@ -167,6 +167,7 @@ var (
 )
 
 // Button represents a LCM button.
+//
 //go:generate stringer -type=Button
 type Button byte
 
@@ -196,9 +197,8 @@ const (
 // beginning. This can be achieved by first setting the display to the
 // empty string as it will be padded with spaces.
 //
-//      SetDisplay(DisplayTop, 0, "")
-//      SetDisplay(DisplayTop, 2, "My message")
-//
+//	SetDisplay(DisplayTop, 0, "")
+//	SetDisplay(DisplayTop, 2, "My message")
 func SetDisplay(line DisplayLine, indent int, text string) (raw Message, err error) {
 	if line != DisplayTop && line != DisplayBottom {
 		return nil, errors.New("display line out of bounds")
@@ -237,19 +237,19 @@ func SetDisplayCharacter(line DisplayLine, column int, char byte) (Message, erro
 // completed. Done becomes true one step before start meaning that the
 // starting position is not yet reached (we have scrolled to the end).
 //
-// 	next := lcm.Scroll(lcm.DisplayTop, "This text will scroll")
-// 	for {
-// 		b, start, done := next()
-// 		send(m, b)
-// 		if start {
-// 			time.Sleep(2 * time.Second)
-// 		} else {
-// 			time.Sleep(1 * time.Second)
-// 		}
-// 		if start && done {
-// 			break
-// 		}
-// 	}
+//	next := lcm.Scroll(lcm.DisplayTop, "This text will scroll")
+//	for {
+//		b, start, done := next()
+//		send(m, b)
+//		if start {
+//			time.Sleep(2 * time.Second)
+//		} else {
+//			time.Sleep(1 * time.Second)
+//		}
+//		if start && done {
+//			break
+//		}
+//	}
 func Scroll(line DisplayLine, text string) (next func() (raw Message, start, done bool)) {
 	i := 0
 	done := false
