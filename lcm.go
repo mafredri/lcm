@@ -370,7 +370,7 @@ func (m *LCM) handle() {
 				err := m.write(reply)
 				m.opts.l.Printf("LCM.handle: read(Command): sent ack reply %#x, err: %v", reply, err)
 			} else {
-				m.opts.l.Printf("LCM.handle: read(Command): protocol ack disabled, not sending reply %#v", reply)
+				m.opts.l.Printf("LCM.handle: read(Command): protocol ack disabled, not sending reply %#x", reply.Value())
 			}
 
 		case Reply:
