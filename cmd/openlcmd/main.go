@@ -62,7 +62,7 @@ func main() {
 		defer kbd.Close()
 	}
 
-	mon := monitor.New(ctx, program, m)
+	mon := monitor.New(ctx, program, m, kbd)
 	defer mon.Close()
 
 	mon.SetHome(func(ctx context.Context) error {
