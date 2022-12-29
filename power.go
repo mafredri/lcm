@@ -60,7 +60,7 @@ func NewPower(consumer string) (*Power, error) {
 	for _, name := range gpiod.Chips() {
 		c, err := gpiod.NewChip(name, gpiod.WithConsumer(consumer))
 		if err != nil {
-			panic(err)
+			continue
 		}
 		if c.Label == it87ChipLabel {
 			p.chip = c

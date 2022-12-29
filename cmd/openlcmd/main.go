@@ -6,19 +6,27 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/bendahl/uinput"
+	"github.com/shirou/gopsutil/v3/net"
 
 	"github.com/mafredri/lcm"
+	"github.com/mafredri/lcm/cmd/openlcmd/monitor"
+)
+
+const (
+	program = "openlcmd"
+	version = "v0.0.1"
 )
 
 func main() {
 	// TODO(): Configuration.
 	debug := flag.Bool("debug", false, "Enable debug logging")
 	enableSystemd := flag.Bool("systemd", false, "Runs in systemd mode (removes timestamps from logging)")
-	enableUinput := flag.Bool("uinput", false, "Send button presses via uinput virtual keyboard (/devices/virtual/input)")
+	enableUinput := flag.Bool("uinput", false, "Relay button presses via uinput virtual keyboard (/devices/virtual/input)")
 
 	flag.Parse()
 
@@ -47,156 +55,115 @@ func main() {
 
 	var kbd uinput.Keyboard
 	if *enableUinput {
-		kbd, err = uinput.CreateKeyboard("/dev/uinput", []byte("openlcmd"))
+		kbd, err = uinput.CreateKeyboard("/dev/uinput", []byte(program))
 		if err != nil {
 			panic(err)
 		}
 		defer kbd.Close()
 	}
 
-	power, err := lcm.NewPower("openlcmd")
-	if err != nil {
-		log.Printf("power cycling disabled: %v", err)
-	}
-	defer power.Close()
+	mon := monitor.New(ctx, program, m)
+	defer mon.Close()
 
-	// Keep track of activity, sleep and reset the screen on timeout.
-	activityC := make(chan struct{}, 1)
-	activity := func() {
-		select {
-		case activityC <- struct{}{}:
-		default:
-		}
-	}
-	go func() {
-		<-activityC
-		for {
-			select {
-			case <-activityC:
-			case <-time.After(15 * time.Second):
-				send(m, lcm.DisplayOff)
-				send(m, lcm.DisplayStatus)
-				resetText(m)
-				<-activityC
-			}
-		}
-	}()
-
-	// Listen for protocol messages, mainly to react to button presses.
-	btnCh := make(chan lcm.Button)
-	go func() {
-		for {
-			b := m.Recv()
-			switch b.Type() {
-			case lcm.Command:
-				switch b.Function() {
-				case lcm.Fbutton:
-					btn := lcm.Button(b.Value()[0])
-					kp := 0
-					switch btn {
-					case lcm.Up:
-						kp = uinput.KeyUp
-					case lcm.Down:
-						kp = uinput.KeyDown
-					case lcm.Back:
-						kp = uinput.KeyBack
-					case lcm.Enter:
-						kp = uinput.KeyEnter
-					}
-					log.Printf("Button press: %s", btn)
-					select {
-					case btnCh <- btn:
-					default:
-					}
-
-					if kbd != nil && kp > 0 {
-						kbd.KeyPress(kp)
-					}
-
-					// Screen is implicitly woken on button
-					// press, so reset inactivity timer.
-					activity()
-
-				case lcm.Fversion:
-					ver := b.Value()
-					log.Printf("Detected LCM MCU version %d.%d.%d", ver[0], ver[1], ver[2])
-				}
-			case lcm.Reply:
-
-			default:
-				return
-			}
-		}
-	}()
-
-	// Initialization routine.
-	go func() {
-		send(m, lcm.DisplayOn)
-		send(m, lcm.DisplayStatus)
-		setDisplay(m, lcm.DisplayBottom, 0, "")
-
-		next := lcm.Scroll(lcm.DisplayTop, "Welcome to openlcmd!")
-		for {
-			b, start, done := next()
-			send(m, b)
-			activity()
-			if start && done {
-				break
-			}
-			if start || done {
-				time.Sleep(2 * time.Second)
-			} else {
-				time.Sleep(75 * time.Millisecond)
-			}
+	mon.SetHome(func(ctx context.Context) error {
+		hostname, err := os.Hostname()
+		if err != nil {
+			hostname = "Unknown"
+			log.Printf("hostname check failed: %v", err)
 		}
 
-		nextChars, goBack := lcm.ShowAllCharCodes()
-		for {
-			b1, b2, _, _ := nextChars()
-			send(m, b1)
-			send(m, b2)
-			activity()
-
-			btn := <-btnCh
-			if btn == lcm.Up {
-				goBack()
-			} else if btn == lcm.Back || btn == lcm.Enter {
-				break
+		ipaddr := "0.0.0.0"
+		netif, err := net.InterfacesWithContext(ctx)
+		if err != nil {
+			return err
+		}
+		for _, i := range netif {
+			if i.Name == "lo" || strings.HasPrefix(i.Name, "br-") || strings.HasPrefix(i.Name, "docker") || strings.HasPrefix(i.Name, "veth") {
+				continue
 			}
+			if len(i.Addrs) == 0 {
+				continue
+			}
+			ipaddr = i.Addrs[0].Addr
 		}
 
-		resetText(m)
+		setDisplay(mon, lcm.DisplayTop, 0, hostname)
+		setDisplay(mon, lcm.DisplayBottom, 0, ipaddr)
 
-		activity()
-	}()
+		return nil
+	})
+
+	mon.SetMenu(
+		monitor.MenuItem{
+			Name: "Main",
+			SubMenu: []monitor.MenuItem{
+				{
+					Name: "Info",
+					SubMenu: []monitor.MenuItem{
+						{
+							Name: "WIP",
+							Func: func(ctx context.Context) error {
+								return nil
+							},
+						},
+					},
+				},
+				{
+					Name: "System",
+					SubMenu: []monitor.MenuItem{
+						{
+							Name:    "Shutdown",
+							Confirm: true,
+							Func: func(ctx context.Context) error {
+								// if mon.Confirm(ctx, "Are you sure?") {
+								// 	setDisplay(mon, lcm.DisplayTop, 0, "Shutting down...")
+								// 	setDisplay(mon, lcm.DisplayBottom, 0, "")
+								// 	return exec.Command("/usr/sbin/shutdown", "-h", "now").Run()
+								// }
+								// mon.Back()
+								return nil
+							},
+						},
+						{
+							Name:    "Restart",
+							Confirm: true,
+							Func: func(ctx context.Context) error {
+								return nil
+							},
+						},
+					},
+				},
+				{
+					Name: program,
+					SubMenu: []monitor.MenuItem{
+						{
+							Name: "Version",
+							Func: func(_ context.Context) error {
+								setDisplay(mon, lcm.DisplayBottom, 0, program+" "+version)
+								time.Sleep(3 * time.Second)
+								return nil
+							},
+						},
+					},
+				},
+			},
+		},
+	)
 
 	<-ctx.Done()
 }
 
-func resetText(m *lcm.LCM) {
-	// Clear display lines.
-	setDisplay(m, lcm.DisplayTop, 0, " openlcmd v0.0.1")
-	setDisplay(m, lcm.DisplayBottom, 0, "")
-}
-
-func send(m *lcm.LCM, b lcm.Message) {
+func send(m *monitor.Monitor, b lcm.Message) {
 	err := m.Send(b)
 	if err != nil {
 		log.Println(err)
 	}
 }
 
-func setDisplay(m *lcm.LCM, line lcm.DisplayLine, indent int, text string) {
+func setDisplay(m *monitor.Monitor, line lcm.DisplayLine, indent int, text string) {
 	b, err := lcm.SetDisplay(line, indent, text)
 	if err != nil {
 		panic(err)
 	}
 	send(m, b)
-}
-
-func requestVersion(m *lcm.LCM) {
-	// The version command is picky, needs time to think.
-	time.Sleep(100 * time.Millisecond)
-	send(m, lcm.RequestVersion)
-	time.Sleep(300 * time.Millisecond)
 }
