@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/bendahl/uinput"
 	"github.com/mafredri/lcm"
 )
 
@@ -17,13 +18,14 @@ type Monitor struct {
 	cancel context.CancelFunc
 	lcm    *lcm.LCM
 	p      *lcm.Power
+	kbd    uinput.Keyboard
 	off    bool
 	home   UpdateDisplayFunc
 	menu   *menu
 	actC   chan struct{}
 }
 
-func New(ctx context.Context, name string, l *lcm.LCM) *Monitor {
+func New(ctx context.Context, name string, l *lcm.LCM, kbd uinput.Keyboard) *Monitor {
 	p, err := lcm.NewPower(name)
 	if err != nil {
 		log.Printf("power cycling disabled: %v", err)
@@ -36,6 +38,7 @@ func New(ctx context.Context, name string, l *lcm.LCM) *Monitor {
 		cancel: cancel,
 		lcm:    l,
 		p:      p,
+		kbd:    kbd,
 		menu:   &menu{},
 		actC:   make(chan struct{}),
 	}
@@ -111,16 +114,27 @@ func (m *Monitor) recv() {
 				btn := lcm.Button(b.Value()[0])
 				log.Printf("Button press: %s", btn)
 
+				kp := 0
+				var action func()
 				switch btn {
 				case lcm.Up:
-					m.menu.up()
+					kp = uinput.KeyUp
+					action = m.menu.up
 				case lcm.Down:
-					m.menu.down()
+					kp = uinput.KeyDown
+					action = m.menu.down
 				case lcm.Back:
-					m.menu.back()
+					kp = uinput.KeyBack
+					action = m.menu.back
 				case lcm.Enter:
-					m.menu.enter()
+					kp = uinput.KeyEnter
+					action = m.menu.enter
 				}
+
+				if m.kbd != nil && kp > 0 {
+					m.kbd.KeyPress(kp)
+				}
+				action()
 
 				// Screen is implicitly woken on button
 				// press, so reset inactivity timer.
