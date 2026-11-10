@@ -84,7 +84,16 @@ func main() {
 			if len(i.Addrs) == 0 {
 				continue
 			}
-			ipaddr = i.Addrs[0].Addr
+			// Addresses are in CIDR notation (e.g. 192.168.100.100/24),
+			// which can exceed the 16 character display width. Show
+			// the first IPv4 address without the prefix length.
+			for _, a := range i.Addrs {
+				ip := strings.SplitN(a.Addr, "/", 2)[0]
+				if !strings.Contains(ip, ":") {
+					ipaddr = ip
+					break
+				}
+			}
 		}
 
 		setDisplay(mon, lcm.DisplayTop, 0, hostname)
@@ -161,6 +170,11 @@ func send(m *monitor.Monitor, b lcm.Message) {
 }
 
 func setDisplay(m *monitor.Monitor, line lcm.DisplayLine, indent int, text string) {
+	// The display fits 16 characters, truncate instead of failing
+	// on e.g. a long hostname.
+	if len(text) > 16 {
+		text = text[:16]
+	}
 	b, err := lcm.SetDisplay(line, indent, text)
 	if err != nil {
 		panic(err)
